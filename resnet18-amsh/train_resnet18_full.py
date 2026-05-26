@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""
+Binary Classification with ResNet18
+Handles sequence-based dataset splitting to prevent data leakage
+Compares training with and without augmentation
+
+FIXES APPLIED:
+  1. Safe file copying (image extensions only)
+  2. Best model saving during training
+  3. Best model loaded before evaluation (not final epoch)
+  4. Threshold analysis on BOTH models
+  5. LR scheduler added to prevent overfitting
+  6. Early stopping (patience=20) on val_loss — consistent with scheduler
+  7. Best weights restored inside train_model() before return
+  8. Timestamp suffix on checkpoint names to avoid silent overwrites
+"""
+
+import os
+import time
+import shutil
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, roc_curve, auc
+)
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms, models
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+SOURCE_DIR          = "/home/teaching/DL-12/"
+OUTPUT_DIR          = "dataset_clean"
+SPLITS              = {"train": 0.8, "val": 0.1, "test": 0.1}
+BATCH_SIZE          = 32
+NUM_EPOCHS          = 120
+LEARNING_RATE       = 0.001
+EARLY_STOP_PATIENCE = 20          # stop if val_loss doesn't improve for 20 epochs
+DEVICE              = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+NUM_WORKERS         = 4
+
+MEAN = [0.485, 0.456, 0.406]
+STD  = [0.229, 0.224, 0.225]
+
+VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+
+# ============================================================================
+# DATASET PREPARATION
+# ============================================================================
+def create_split_dataset():
+    """
+    Split dataset at folder level (sequences) to prevent data leakage.
+    Sorted order — no shuffle — for reproducibility.
+    Only copies valid image files (fix 1).
+    """
+    print("=" * 70)
+    print("CREATING DATASET SPLIT")
+    print("=" * 70)
+
+    if os.path.exists(OUTPUT_DIR):
+        print(f"Removing existing {OUTPUT_DIR}...")
+        shutil.rmtree(OUTPUT_DIR)
+
+    for class_name in ["attack", "real"]:
+        class_path = Path(SOURCE_DIR) / class_name
+
+        if not class_path.exists():
+            raise ValueError(f"Class directory not found: {class_path}")
+
+        sequence_folders = sorted([f for f in class_path.iterdir() if f.is_dir()])
+
+        if not sequence_folders:
+            raise ValueError(f"No sequence folders found in {class_path}")
+
+        print(f"\nClass '{class_name}': {len(sequence_folders)} sequences")
+
+        n_sequences = len(sequence_folders)
+        n_train     = int(n_sequences * SPLITS["train"])
+        n_val       = int(n_sequences * SPLITS["val"])
+
+        train_folders = sequence_folders[:n_train]
+        val_folders   = sequence_folders[n_train:n_train + n_val]
+        test_folders  = sequence_folders[n_train + n_val:]
+
+        print(f"  Train: {len(train_folders)} sequences")
+        print(f"  Val:   {len(val_folders)} sequences")
+        print(f"  Test:  {len(test_folders)} sequences")
+
+        for split_name, folders in [("train", train_folders),
+                                     ("val",   val_folders),
+                                     ("test",  test_folders)]:
+            for folder in folders:
+                dest_dir = Path(OUTPUT_DIR) / split_name / class_name / folder.name
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                for img_file in folder.glob("*"):
+                    if img_file.is_file() and img_file.suffix.lower() in VALID_EXTENSIONS:
+                        shutil.copy2(img_file, dest_dir / img_file.name)
+
+    print("\nDataset split complete!")
+    for split_name in ["train", "val", "test"]:
+        for class_name in ["attack", "real"]:
+            split_path = Path(OUTPUT_DIR) / split_name / class_name
+            n_images   = sum(1 for _ in split_path.rglob("*") if _.is_file())
+            print(f"  {split_name}/{class_name}: {n_images} images")
+    print()
+
+
+# ============================================================================
+# TRANSFORMS
+# ============================================================================
+def get_transforms(augment=False):
+    if augment:
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=MEAN, std=STD),
+        ])
+
+    eval_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=MEAN, std=STD),
+    ])
+
+    return train_transform, eval_transform
+
+
+# ============================================================================
+# DATA LOADERS
+# ============================================================================
+def get_dataloaders(augment=False):
+    train_transform, eval_transform = get_transforms(augment)
+
+    train_dataset = datasets.ImageFolder(root=os.path.join(OUTPUT_DIR, "train"), transform=train_transform)
+    val_dataset   = datasets.ImageFolder(root=os.path.join(OUTPUT_DIR, "val"),   transform=eval_transform)
+    test_dataset  = datasets.ImageFolder(root=os.path.join(OUTPUT_DIR, "test"),  transform=eval_transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS, pin_memory=True)
+    val_loader   = DataLoader(val_dataset,   batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
+    test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True)
+
+    return train_loader, val_loader, test_loader, train_dataset.classes
+
+
+# ============================================================================
+# MODEL
+# ============================================================================
+def get_model():
+    model    = models.resnet18(pretrained=True)
+    model.fc = nn.Linear(model.fc.in_features, 2)
+    return model.to(DEVICE)
+
+
+# ============================================================================
+# TRAINING
+# ============================================================================
+def train_epoch(model, loader, criterion, optimizer):
+    model.train()
+    running_loss, correct, total = 0.0, 0, 0
+
+    for inputs, labels in loader:
+        inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss    = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * inputs.size(0)
+        _, predicted  = outputs.max(1)
+        total        += labels.size(0)
+        correct      += predicted.eq(labels).sum().item()
+
+    return running_loss / total, 100. * correct / total
+
+
+def validate(model, loader, criterion):
+    model.eval()
+    running_loss, correct, total = 0.0, 0, 0
+
+    with torch.no_grad():
+        for inputs, labels in loader:
+            inputs, labels = inputs.to(DEVICE), labels.to(DEVICE)
+            outputs        = model(inputs)
+            loss           = criterion(outputs, labels)
+
+            running_loss += loss.item() * inputs.size(0)
+            _, predicted  = outputs.max(1)
+            total        += labels.size(0)
+            correct      += predicted.eq(labels).sum().item()
+
+    return running_loss / total, 100. * correct / total
+
+
+def train_model(model, train_loader, val_loader, num_epochs, experiment_name):
+    """
+    Train the model and return history + checkpoint path.
+
+    Key guarantees:
+      - Early stopping and LR scheduler both monitor val_loss (no mismatch).
+      - Best weights are restored before returning — caller always gets the
+        best model regardless of whether early stopping fired.
+      - Checkpoint filename includes a Unix timestamp to prevent silent
+        overwrites on re-runs.
+    """
+    print(f"\n{'=' * 70}")
+    print(f"TRAINING: {experiment_name}")
+    print(f"{'=' * 70}")
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+    # Both scheduler and early stopping watch val_loss — consistent signal
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5, verbose=True
+    )
+
+    # Timestamp prevents silent overwrite if script is re-run
+    checkpoint_path = (
+        f"{experiment_name.replace(' ', '_')}_best_{int(time.time())}.pth"
+    )
+
+    history = {
+        "train_loss": [], "train_acc": [],
+        "val_loss":   [], "val_acc":   [],
+    }
+
+    best_val_loss     = float("inf")
+    epochs_no_improve = 0
+
+    for epoch in range(num_epochs):
+        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer)
+        val_loss,   val_acc   = validate(model, val_loader, criterion)
+
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        scheduler.step(val_loss)
+
+        if val_loss < best_val_loss:
+            best_val_loss     = val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), checkpoint_path)
+        else:
+            epochs_no_improve += 1
+
+        if (epoch + 1) % 10 == 0:
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch [{epoch+1}/{num_epochs}] "
+                  f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% | "
+                  f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}% | "
+                  f"LR: {current_lr:.6f} | No-improve: {epochs_no_improve}/{EARLY_STOP_PATIENCE}")
+
+        # == fires exactly once; avoids re-triggering on every subsequent epoch
+        if epochs_no_improve == EARLY_STOP_PATIENCE:
+            print(f"\n⚠  Early stopping at epoch {epoch+1} "
+                  f"(val_loss stagnant for {EARLY_STOP_PATIENCE} epochs)")
+            break
+
+    # Restore best weights — guaranteed regardless of early stop or full run
+    print(f"\nRestoring best weights from → {checkpoint_path}")
+    model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
+
+    print(f"Best Val Loss : {best_val_loss:.4f}")
+    print(f"Best Val Acc  : {max(history['val_acc']):.2f}%")
+    print(f"Epochs run    : {len(history['train_loss'])}")
+    return history, checkpoint_path
+
+
+# ============================================================================
+# EVALUATION
+# ============================================================================
+def evaluate_model(model, test_loader):
+    model.eval()
+    all_preds, all_probs, all_labels = [], [], []
+
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs  = inputs.to(DEVICE)
+            outputs = model(inputs)
+            probs   = torch.softmax(outputs, dim=1)
+            _, preds = outputs.max(1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(labels.numpy())
+
+    return np.array(all_preds), np.array(all_probs), np.array(all_labels)
+
+
+def compute_metrics(y_true, y_pred, y_probs):
+    metrics = {
+        "accuracy":  accuracy_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred, average='binary'),
+        "recall":    recall_score(y_true, y_pred, average='binary'),
+        "f1":        f1_score(y_true, y_pred, average='binary'),
+    }
+
+    fpr, tpr, _                 = roc_curve(y_true, y_probs[:, 1])
+    metrics["auc"]               = auc(fpr, tpr)
+    metrics["fpr"]               = fpr
+    metrics["tpr"]               = tpr
+    metrics["confusion_matrix"]  = confusion_matrix(y_true, y_pred)
+
+    return metrics
+
+
+# ============================================================================
+# THRESHOLD ANALYSIS
+# ============================================================================
+def threshold_analysis(y_true, y_probs):
+    thresholds             = np.linspace(0, 1, 100)
+    accuracies, FARs, FRRs = [], [], []
+
+    for threshold in thresholds:
+        y_pred = (y_probs[:, 1] >= threshold).astype(int)
+        accuracies.append(accuracy_score(y_true, y_pred))
+
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        FARs.append(fp / (fp + tn) if (fp + tn) > 0 else 0)
+        FRRs.append(fn / (fn + tp) if (fn + tp) > 0 else 0)
+
+    return thresholds, accuracies, FARs, FRRs
+
+
+# ============================================================================
+# PLOTTING
+# ============================================================================
+def plot_training_history(history1, history2, name1, name2):
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    epochs1   = range(1, len(history1["train_loss"]) + 1)
+    epochs2   = range(1, len(history2["train_loss"]) + 1)
+
+    axes[0, 0].plot(epochs1, history1["train_loss"], label=f'{name1} - Train', linewidth=2)
+    axes[0, 0].plot(epochs1, history1["val_loss"],   label=f'{name1} - Val',   linewidth=2)
+    axes[0, 0].set_title('Training Loss (No Augmentation)', fontsize=12, fontweight='bold')
+    axes[0, 0].set_xlabel('Epoch'); axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].legend(); axes[0, 0].grid(True, alpha=0.3)
+
+    axes[0, 1].plot(epochs2, history2["train_loss"], label=f'{name2} - Train', linewidth=2)
+    axes[0, 1].plot(epochs2, history2["val_loss"],   label=f'{name2} - Val',   linewidth=2)
+    axes[0, 1].set_title('Training Loss (With Augmentation)', fontsize=12, fontweight='bold')
+    axes[0, 1].set_xlabel('Epoch'); axes[0, 1].set_ylabel('Loss')
+    axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
+
+    axes[1, 0].plot(epochs1, history1["train_acc"], label=f'{name1} - Train', linewidth=2)
+    axes[1, 0].plot(epochs1, history1["val_acc"],   label=f'{name1} - Val',   linewidth=2)
+    axes[1, 0].set_title('Training Accuracy (No Augmentation)', fontsize=12, fontweight='bold')
+    axes[1, 0].set_xlabel('Epoch'); axes[1, 0].set_ylabel('Accuracy (%)')
+    axes[1, 0].legend(); axes[1, 0].grid(True, alpha=0.3)
+
+    axes[1, 1].plot(epochs2, history2["train_acc"], label=f'{name2} - Train', linewidth=2)
+    axes[1, 1].plot(epochs2, history2["val_acc"],   label=f'{name2} - Val',   linewidth=2)
+    axes[1, 1].set_title('Training Accuracy (With Augmentation)', fontsize=12, fontweight='bold')
+    axes[1, 1].set_xlabel('Epoch'); axes[1, 1].set_ylabel('Accuracy (%)')
+    axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig('training_history.png', dpi=300, bbox_inches='tight')
+    print("Saved: training_history.png")
+    plt.close()
+
+
+def plot_roc_curves(metrics1, metrics2, name1, name2):
+    plt.figure(figsize=(10, 8))
+    plt.plot(metrics1["fpr"], metrics1["tpr"], label=f'{name1} (AUC = {metrics1["auc"]:.4f})', linewidth=2)
+    plt.plot(metrics2["fpr"], metrics2["tpr"], label=f'{name2} (AUC = {metrics2["auc"]:.4f})', linewidth=2)
+    plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier', linewidth=1)
+    plt.xlabel('False Positive Rate', fontsize=12)
+    plt.ylabel('True Positive Rate',  fontsize=12)
+    plt.title('ROC Curves Comparison', fontsize=14, fontweight='bold')
+    plt.legend(fontsize=11); plt.grid(True, alpha=0.3)
+    plt.savefig('roc_curves.png', dpi=300, bbox_inches='tight')
+    print("Saved: roc_curves.png")
+    plt.close()
+
+
+def plot_confusion_matrices(metrics1, metrics2, name1, name2, classes):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, metrics, name in zip(axes, [metrics1, metrics2], [name1, name2]):
+        sns.heatmap(metrics["confusion_matrix"], annot=True, fmt='d',
+                    cmap='Blues', ax=ax, cbar_kws={'label': 'Count'})
+        ax.set_title(f'Confusion Matrix - {name}', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Predicted Label'); ax.set_ylabel('True Label')
+        ax.set_xticklabels(classes); ax.set_yticklabels(classes)
+
+    plt.tight_layout()
+    plt.savefig('confusion_matrices.png', dpi=300, bbox_inches='tight')
+    print("Saved: confusion_matrices.png")
+    plt.close()
+
+
+def plot_threshold_analysis(thresholds_a, accuracies_a, FARs_a, FRRs_a,
+                             thresholds_b, accuracies_b, FARs_b, FRRs_b):
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+    def _plot_far_frr(ax, thresholds, FARs, FRRs, title):
+        ax.plot(thresholds, FARs, label='FAR (False Acceptance Rate)', linewidth=2)
+        ax.plot(thresholds, FRRs, label='FRR (False Rejection Rate)',  linewidth=2)
+        eer_idx = np.argmin(np.abs(np.array(FARs) - np.array(FRRs)))
+        ax.axvline(x=thresholds[eer_idx], color='red', linestyle='--',
+                   label=f'EER at {thresholds[eer_idx]:.2f}')
+        ax.set_xlabel('Threshold', fontsize=11); ax.set_ylabel('Rate', fontsize=11)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
+
+    def _plot_acc(ax, thresholds, accuracies, title):
+        ax.plot(thresholds, accuracies, linewidth=2, color='green')
+        best_idx = np.argmax(accuracies)
+        ax.axvline(x=thresholds[best_idx], color='red', linestyle='--',
+                   label=f'Best @ {thresholds[best_idx]:.2f} (Acc={accuracies[best_idx]:.4f})')
+        ax.set_xlabel('Threshold', fontsize=11); ax.set_ylabel('Accuracy', fontsize=11)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.legend(fontsize=10); ax.grid(True, alpha=0.3)
+
+    _plot_far_frr(axes[0, 0], thresholds_a, FARs_a, FRRs_a, 'FAR/FRR — No Augmentation')
+    _plot_acc(    axes[0, 1], thresholds_a, accuracies_a,    'Threshold vs Accuracy — No Augmentation')
+    _plot_far_frr(axes[1, 0], thresholds_b, FARs_b, FRRs_b, 'FAR/FRR — With Augmentation')
+    _plot_acc(    axes[1, 1], thresholds_b, accuracies_b,    'Threshold vs Accuracy — With Augmentation')
+
+    plt.tight_layout()
+    plt.savefig('threshold_analysis.png', dpi=300, bbox_inches='tight')
+    print("Saved: threshold_analysis.png")
+    plt.close()
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+def main():
+    print("\n" + "=" * 70)
+    print("RESNET18 BINARY CLASSIFICATION")
+    print("=" * 70)
+    print(f"Device:            {DEVICE}")
+    print(f"Batch Size:        {BATCH_SIZE}")
+    print(f"Max Epochs:        {NUM_EPOCHS}")
+    print(f"Learning Rate:     {LEARNING_RATE}")
+    print(f"Early Stop Pat.:   {EARLY_STOP_PATIENCE} epochs (monitors val_loss)")
+
+    # Step 1: Dataset split
+    create_split_dataset()
+
+    # Step 2: Experiment A — No Augmentation
+    print("\n" + "=" * 70)
+    print("EXPERIMENT A: WITHOUT AUGMENTATION")
+    print("=" * 70)
+    train_loader_a, val_loader_a, test_loader_a, classes = get_dataloaders(augment=False)
+    model_a = get_model()
+    history_a, ckpt_a = train_model(model_a, train_loader_a, val_loader_a, NUM_EPOCHS, "No_Augmentation")
+
+    # Step 3: Experiment B — With Augmentation
+    print("\n" + "=" * 70)
+    print("EXPERIMENT B: WITH AUGMENTATION")
+    print("=" * 70)
+    train_loader_b, val_loader_b, test_loader_b, _ = get_dataloaders(augment=True)
+    model_b = get_model()
+    history_b, ckpt_b = train_model(model_b, train_loader_b, val_loader_b, NUM_EPOCHS, "With_Augmentation")
+
+    # Step 4: Evaluate — models already hold best weights (restored in train_model)
+    print("\n" + "=" * 70)
+    print("EVALUATION ON TEST SET")
+    print("=" * 70)
+
+    print("\nEvaluating Model A (No Augmentation)...")
+    preds_a, probs_a, labels_a = evaluate_model(model_a, test_loader_a)
+    metrics_a = compute_metrics(labels_a, preds_a, probs_a)
+
+    print("Evaluating Model B (With Augmentation)...")
+    preds_b, probs_b, labels_b = evaluate_model(model_b, test_loader_b)
+    metrics_b = compute_metrics(labels_b, preds_b, probs_b)
+
+    # Step 5: Threshold analysis on both models
+    print("\nPerforming threshold analysis on both models...")
+    thresholds_a, accuracies_a, FARs_a, FRRs_a = threshold_analysis(labels_a, probs_a)
+    thresholds_b, accuracies_b, FARs_b, FRRs_b = threshold_analysis(labels_b, probs_b)
+
+    # Step 6: Generate all plots
+    print("\n" + "=" * 70)
+    print("GENERATING PLOTS")
+    print("=" * 70)
+    plot_training_history(history_a, history_b, "No Aug", "With Aug")
+    plot_roc_curves(metrics_a, metrics_b, "No Augmentation", "With Augmentation")
+    plot_confusion_matrices(metrics_a, metrics_b, "No Augmentation", "With Augmentation", classes)
+    plot_threshold_analysis(
+        thresholds_a, accuracies_a, FARs_a, FRRs_a,
+        thresholds_b, accuracies_b, FARs_b, FRRs_b,
+    )
+
+    # Step 7: Final comparison table
+    print("\n" + "=" * 70)
+    print("FINAL RESULTS COMPARISON")
+    print("=" * 70)
+    print(f"\n{'Metric':<20} {'No Augmentation':<20} {'With Augmentation':<20}")
+    print("-" * 60)
+    for metric in ["accuracy", "precision", "recall", "f1", "auc"]:
+        label = "AUC" if metric == "auc" else metric.capitalize()
+        print(f"{label:<20} {metrics_a[metric]:<20.4f} {metrics_b[metric]:.4f}")
+    print("-" * 60)
+
+    best = "WITH AUGMENTATION" if metrics_b['accuracy'] > metrics_a['accuracy'] else "WITHOUT AUGMENTATION"
+    print(f"\n✓ Best Model: {best}")
+
+    print("\n" + "=" * 70)
+    print("EXPERIMENT COMPLETE")
+    print("=" * 70)
+    print(f"\nActual epochs run — No Aug: {len(history_a['train_loss'])}, "
+          f"With Aug: {len(history_b['train_loss'])}")
+    print(f"\nCheckpoints: {ckpt_a}")
+    print(f"             {ckpt_b}")
+    print("\nPlots saved:")
+    print("  training_history.png  |  roc_curves.png")
+    print("  confusion_matrices.png  |  threshold_analysis.png")
+    print()
+
+
+if __name__ == "__main__":
+    main()

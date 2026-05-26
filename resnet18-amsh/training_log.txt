@@ -1,0 +1,126 @@
+/home/teaching/.local/lib/python3.10/site-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+/home/teaching/.local/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/teaching/.local/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet18_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet18_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+/home/teaching/.local/lib/python3.10/site-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+
+======================================================================
+RESNET18 BINARY CLASSIFICATION
+======================================================================
+Device:            cuda
+Batch Size:        32
+Max Epochs:        120
+Learning Rate:     0.001
+Early Stop Pat.:   20 epochs (monitors val_loss)
+======================================================================
+CREATING DATASET SPLIT
+======================================================================
+
+Class 'attack': 295 sequences
+  Train: 236 sequences
+  Val:   29 sequences
+  Test:  30 sequences
+
+Class 'real': 295 sequences
+  Train: 236 sequences
+  Val:   29 sequences
+  Test:  30 sequences
+
+Dataset split complete!
+  train/attack: 4720 images
+  train/real: 4720 images
+  val/attack: 580 images
+  val/real: 580 images
+  test/attack: 600 images
+  test/real: 600 images
+
+
+======================================================================
+EXPERIMENT A: WITHOUT AUGMENTATION
+======================================================================
+
+======================================================================
+TRAINING: No_Augmentation
+======================================================================
+Epoch [10/120] Train Loss: 0.0606, Train Acc: 97.86% | Val Loss: 0.0587, Val Acc: 98.28% | LR: 0.001000 | No-improve: 0/20
+Epoch [20/120] Train Loss: 0.0317, Train Acc: 98.76% | Val Loss: 0.0404, Val Acc: 98.97% | LR: 0.001000 | No-improve: 4/20
+Epoch [30/120] Train Loss: 0.0021, Train Acc: 99.95% | Val Loss: 0.0483, Val Acc: 98.88% | LR: 0.000250 | No-improve: 14/20
+/home/teaching/DL-12/resnet18-amsh/train_resnet18_full.py:282: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
+
+⚠  Early stopping at epoch 36 (val_loss stagnant for 20 epochs)
+
+Restoring best weights from → No_Augmentation_best_1777825714.pth
+Best Val Loss : 0.0216
+Best Val Acc  : 99.48%
+Epochs run    : 36
+
+======================================================================
+EXPERIMENT B: WITH AUGMENTATION
+======================================================================
+
+======================================================================
+TRAINING: With_Augmentation
+======================================================================
+Epoch [10/120] Train Loss: 0.0978, Train Acc: 96.14% | Val Loss: 0.0473, Val Acc: 98.28% | LR: 0.001000 | No-improve: 2/20
+Epoch [20/120] Train Loss: 0.0445, Train Acc: 98.26% | Val Loss: 0.0287, Val Acc: 98.88% | LR: 0.000500 | No-improve: 4/20
+Epoch [30/120] Train Loss: 0.0244, Train Acc: 99.03% | Val Loss: 0.0076, Val Acc: 99.74% | LR: 0.000250 | No-improve: 9/20
+Epoch [40/120] Train Loss: 0.0099, Train Acc: 99.59% | Val Loss: 0.0091, Val Acc: 99.74% | LR: 0.000063 | No-improve: 19/20
+Epoch [50/120] Train Loss: 0.0075, Train Acc: 99.74% | Val Loss: 0.0076, Val Acc: 99.83% | LR: 0.000031 | No-improve: 9/20
+Epoch [60/120] Train Loss: 0.0069, Train Acc: 99.79% | Val Loss: 0.0102, Val Acc: 99.83% | LR: 0.000008 | No-improve: 19/20
+
+⚠  Early stopping at epoch 61 (val_loss stagnant for 20 epochs)
+
+Restoring best weights from → With_Augmentation_best_1777826692.pth
+Best Val Loss : 0.0061
+Best Val Acc  : 99.91%
+Epochs run    : 61
+
+======================================================================
+EVALUATION ON TEST SET
+======================================================================
+
+Evaluating Model A (No Augmentation)...
+Evaluating Model B (With Augmentation)...
+
+Performing threshold analysis on both models...
+
+======================================================================
+GENERATING PLOTS
+======================================================================
+Saved: training_history.png
+Saved: roc_curves.png
+Saved: confusion_matrices.png
+Saved: threshold_analysis.png
+
+======================================================================
+FINAL RESULTS COMPARISON
+======================================================================
+
+Metric               No Augmentation      With Augmentation   
+------------------------------------------------------------
+Accuracy             0.9542               0.9967
+Precision            0.9417               0.9934
+Recall               0.9683               1.0000
+F1                   0.9548               0.9967
+AUC                  0.9938               1.0000
+------------------------------------------------------------
+
+✓ Best Model: WITH AUGMENTATION
+
+======================================================================
+EXPERIMENT COMPLETE
+======================================================================
+
+Actual epochs run — No Aug: 36, With Aug: 61
+
+Checkpoints: No_Augmentation_best_1777825714.pth
+             With_Augmentation_best_1777826692.pth
+
+Plots saved:
+  training_history.png  |  roc_curves.png
+  confusion_matrices.png  |  threshold_analysis.png
+
