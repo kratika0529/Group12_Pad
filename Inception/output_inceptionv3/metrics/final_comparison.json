@@ -1,0 +1,44 @@
+{
+  "accuracy": {
+    "no_aug": 0.9898305084745763,
+    "with_aug": 1.0,
+    "delta": 0.01016949152542368,
+    "winner": "With Aug"
+  },
+  "precision": {
+    "no_aug": 1.0,
+    "with_aug": 1.0,
+    "delta": 0.0,
+    "winner": "Tie"
+  },
+  "recall": {
+    "no_aug": 0.9796610169491525,
+    "with_aug": 1.0,
+    "delta": 0.02033898305084747,
+    "winner": "With Aug"
+  },
+  "f1": {
+    "no_aug": 0.9897260273972602,
+    "with_aug": 1.0,
+    "delta": 0.010273972602739767,
+    "winner": "With Aug"
+  },
+  "apcer": {
+    "no_aug": 0.0,
+    "with_aug": 0.0,
+    "delta": 0.0,
+    "winner": "Tie"
+  },
+  "bpcer": {
+    "no_aug": 0.020338983050847456,
+    "with_aug": 0.0,
+    "delta": -0.020338983050847456,
+    "winner": "With Aug"
+  },
+  "acer": {
+    "no_aug": 0.010169491525423728,
+    "with_aug": 0.0,
+    "delta": -0.010169491525423728,
+    "winner": "With Aug"
+  }
+}
