@@ -1,0 +1,102 @@
+295-Class Classification → Subject-wise Embedding → Pairwise Dissimilarity
+Dataset : /home/teaching/DL-12/DL_12PROJECT_VULNERABILITY/DL_ProjectP12_clean
+========================================================================
+
+DISSIMILARITY FORMULA:
+  dissimilarity(A, B) = 1 - cosine_similarity(A, B)
+  Both embeddings are L2-normalised, so cosine = dot product.
+
+SUBJECT-WISE EMBEDDING:
+  All images of a subject → extract embedding per image
+  → average embeddings → L2-normalise → ONE vector per subject
+
+VERSION A — Real-Real (all subject pairs i ≠ j):
+  Want: HIGH dissimilarity → subjects well separated
+
+VERSION B — Real-Spoof SAME subject:
+  Want: HIGH dissimilarity → model rejects printed photo
+  LOW dissimilarity = VULNERABLE to printed-photo attack
+
+VERSION C — Real-Spoof DIFFERENT subject:
+  Checks cross-identity spoofing risk
+
+Backbone             RR mean   RS mean   RC mean   d-prime      #RR     #RS
+------------------------------------------------------------------------
+ResNet18              0.4050    0.3382    0.5120    0.3970   43,365     295
+ResNet50              0.4955    0.2094    0.4797    1.5679   43,365     295
+EfficientNetB0        0.6378    0.7622    0.9880   -0.3988   43,365     295
+InceptionV3           0.5711    0.4886    0.6568    0.3616   43,365     295
+------------------------------------------------------------------------
+
+ResNet18:
+  Real-Real  (A): n=43,365  mean=0.4050  std=0.1159
+  Real-Spoof (B): n=295  mean=0.3382  std=0.2079
+  Cross-Spoof(C): n=86,730  mean=0.5120
+  d'            : 0.3970
+
+  Top-10 most vulnerable subjects (lowest real-spoof dissim):
+    441                        dissim=0.0308  HIGH RISK
+    503                        dissim=0.0341  HIGH RISK
+    449                        dissim=0.0342  HIGH RISK
+    444                        dissim=0.0369  HIGH RISK
+    325                        dissim=0.0412  HIGH RISK
+    511                        dissim=0.0416  HIGH RISK
+    436                        dissim=0.0437  HIGH RISK
+    469                        dissim=0.0445  HIGH RISK
+    401                        dissim=0.0460  HIGH RISK
+    433                        dissim=0.0477  HIGH RISK
+
+ResNet50:
+  Real-Real  (A): n=43,365  mean=0.4955  std=0.2126
+  Real-Spoof (B): n=295  mean=0.2094  std=0.1463
+  Cross-Spoof(C): n=86,730  mean=0.4797
+  d'            : 1.5679
+
+  Top-10 most vulnerable subjects (lowest real-spoof dissim):
+    511                        dissim=0.0060  HIGH RISK
+    442                        dissim=0.0145  HIGH RISK
+    477                        dissim=0.0212  HIGH RISK
+    449                        dissim=0.0215  HIGH RISK
+    387                        dissim=0.0233  HIGH RISK
+    325                        dissim=0.0239  HIGH RISK
+    505                        dissim=0.0249  HIGH RISK
+    499                        dissim=0.0265  HIGH RISK
+    475                        dissim=0.0273  HIGH RISK
+    444                        dissim=0.0304  HIGH RISK
+
+EfficientNetB0:
+  Real-Real  (A): n=43,365  mean=0.6378  std=0.3294
+  Real-Spoof (B): n=295  mean=0.7622  std=0.2933
+  Cross-Spoof(C): n=86,730  mean=0.9880
+  d'            : -0.3988
+
+  Top-10 most vulnerable subjects (lowest real-spoof dissim):
+    478                        dissim=0.0544  HIGH RISK
+    461                        dissim=0.0617  HIGH RISK
+    511                        dissim=0.0626  HIGH RISK
+    468                        dissim=0.0718  HIGH RISK
+    510                        dissim=0.1002  HIGH RISK
+    473                        dissim=0.1022  HIGH RISK
+    476                        dissim=0.1047  HIGH RISK
+    455                        dissim=0.1079  HIGH RISK
+    464                        dissim=0.1164  HIGH RISK
+    477                        dissim=0.1185  HIGH RISK
+
+InceptionV3:
+  Real-Real  (A): n=43,365  mean=0.5711  std=0.1522
+  Real-Spoof (B): n=295  mean=0.4886  std=0.2843
+  Cross-Spoof(C): n=86,730  mean=0.6568
+  d'            : 0.3616
+
+  Top-10 most vulnerable subjects (lowest real-spoof dissim):
+    475                        dissim=0.0170  HIGH RISK
+    477                        dissim=0.0174  HIGH RISK
+    449                        dissim=0.0256  HIGH RISK
+    441                        dissim=0.0283  HIGH RISK
+    478                        dissim=0.0288  HIGH RISK
+    474                        dissim=0.0292  HIGH RISK
+    434                        dissim=0.0346  HIGH RISK
+    450                        dissim=0.0353  HIGH RISK
+    456                        dissim=0.0399  HIGH RISK
+    433                        dissim=0.0430  HIGH RISK
+
